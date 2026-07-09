@@ -1,0 +1,24 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "dca-scheduler"
+version = "0.1.0"
+description = "Recurring DCA buy daemon with jitter and sqlite tracking"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx>=0.25.0",
+    "click>=8.1.0",
+    "pydantic>=2.0.0",
+]
+
+[project.scripts]
+dca = "dca_scheduler.cli:main"
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "respx>=0.20.0",
+]
