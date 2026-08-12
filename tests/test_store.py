@@ -51,3 +51,7 @@ def test_total_spent_by_pair(store):
     assert stats["ETH/USD"]["total_spent"] == 25.0
 
 
+def test_last_run_state(store):
+    assert store.get_last_run("job_btc") is None
+    store.set_last_run("job_btc", 1735689600.0)
+    assert store.get_last_run("job_btc") == 1735689600.0

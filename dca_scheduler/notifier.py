@@ -10,8 +10,14 @@ log = logging.getLogger(__name__)
 class Notifier:
     """Sends execution alerts via ntfy topic or generic json webhooks."""
 
-    def __init__(self, ntfy_url: Optional[str] = None, webhook_url: Optional[str] = None):
+    def __init__(
+        self,
+        ntfy_url: Optional[str] = None,
+        ntfy_token: Optional[str] = None,
+        webhook_url: Optional[str] = None,
+    ):
         self.ntfy_url = ntfy_url.rstrip("/") if ntfy_url else None
+        self.ntfy_token = ntfy_token
         self.webhook_url = webhook_url
 
     def notify_order_filled(self, pair: str, spent: float, received: float, fee: float, tx_id: str):
@@ -35,6 +41,9 @@ class Notifier:
             "Tags": ",".join(tags),
             "Content-Type": "text/plain; charset=utf-8",
         }
+        if self.ntfy_token:
+            headers["Authorization"] = f"Bearer {self.ntfy_token}"
+
         req = urllib.request.Request(
             self.ntfy_url,
             data=body.encode("utf-8"),
@@ -50,10 +59,11 @@ class Notifier:
 
     def _send_webhook(self, title: str, body: str):
         payload = json.dumps({"title": title, "text": body}).encode("utf-8")
+        # print("DEBUG webhook payload:", payload)
         req = urllib.request.Request(
             self.webhook_url,
             data=payload,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json", "User-Agent": "dca-scheduler"},
             method="POST",
         )
         try:

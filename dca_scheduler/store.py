@@ -17,6 +17,12 @@ CREATE TABLE IF NOT EXISTS orders (
     status TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS daemon_state (
+    key TEXT PRIMARY KEY,
+    val TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_symbol ON orders(symbol);
 CREATE INDEX IF NOT EXISTS idx_orders_ts ON orders(timestamp);
 """
@@ -72,3 +78,40 @@ class OrderStore:
                     (limit,),
                 )
             return [dict(row) for row in cur.fetchall()]
+
+    def get_stats(self, symbol: str) -> Dict[str, float]:
+        query = """
+        SELECT 
+            COUNT(*) as total_orders,
+            COALESCE(SUM(quote_amount), 0.0) as total_spent,
+            COALESCE(SUM(base_amount), 0.0) as total_bought,
+            COALESCE(SUM(fee), 0.0) as total_fees
+        FROM orders
+        WHERE symbol = ? AND status = 'FILLED'
+        """
+        with self._get_conn() as conn:
+            row = conn.execute(query, (symbol.upper(),)).fetchone()
+            total_spent = row["total_spent"]
+            total_bought = row["total_bought"]
+            avg_price = (total_spent / total_bought) if total_bought > 0 else 0.0
+            return {
+                "total_orders": row["total_orders"],
+                "total_spent": total_spent,
+                "total_bought": total_bought,
+                "total_fees": row["total_fees"],
+                "avg_price": avg_price,
+            }
+
+    def set_state(self, key: str, val: str, timestamp: int):
+        with self._get_conn() as conn:
+            conn.execute(
+                "INSERT INTO daemon_state (key, val, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET val = excluded.val, updated_at = excluded.updated_at",
+                (key, val, timestamp),
+            )
+
+    def get_state(self, key: str) -> Optional[str]:
+        with self._get_conn() as conn:
+            cur = conn.execute("SELECT val FROM daemon_state WHERE key = ?", (key,))
+            row = cur.fetchone()
+            return row["val"] if row else None

@@ -20,7 +20,7 @@ def compute_jitter(max_jitter_seconds: int) -> int:
 class Scheduler:
     """Manages periodic DCA execution with randomized jitter delays."""
 
-    def __init__(    
+    def __init__(
         self,
         pair: str,
         amount: float,
@@ -41,7 +41,7 @@ class Scheduler:
         self.dry_run = dry_run
         self._running = False
 
-    def execute_tick(self) -> dict:
+    def execute_tick(self, max_retries: int = 3) -> dict:
         scheduled_for = datetime.datetime.now(datetime.timezone.utc)
         logger.info("Executing buy order for %s (amount: %s)", self.pair, self.target_amount)
 
@@ -58,18 +58,27 @@ class Scheduler:
             self.store.record_order(res)
             return res
 
-        try:
-            order = self.exchange.market_buy(self.pair, self.target_amount)
-            self.store.record_order(order)
-            if self.notifier:
-                self.notifier.notify_success(order)
-            return order
-        except Exception as e:
-            logger.error("Order failed for %s: %s", self.pair, e)
-            self.store.record_failure(self.pair, self.target_amount, str(e))
-            if self.notifier:
-                self.notifier.notify_failure(self.pair, self.target_amount, str(e))
-            raise
+        last_exc = None
+        for attempt in range(1, max_retries + 1):
+            try:
+                order = self.exchange.market_buy(self.pair, self.target_amount)
+                self.store.record_order(order)
+                if self.notifier:
+                    self.notifier.notify_success(order)
+                return order
+            except Exception as e:
+                last_exc = e
+                # 429 or transient connection blips: back off before next attempt
+                logger.warning("Attempt %d/%d failed for %s: %s", attempt, max_retries, self.pair, e)
+                if attempt < max_retries:
+                    backoff = 2 ** attempt + random.uniform(0.5, 2.0)
+                    time.sleep(backoff)
+
+        logger.error("All %d attempts exhausted for %s: %s", max_retries, self.pair, last_exc)
+        self.store.record_failure(self.pair, self.target_amount, str(last_exc))
+        if self.notifier:
+            self.notifier.notify_failure(self.pair, self.target_amount, str(last_exc))
+        raise last_exc
 
     def run(self):
         self._running = True
@@ -78,19 +87,24 @@ class Scheduler:
         while self._running:
             jitter = compute_jitter(self.jitter_sec)
             sleep_duration = self.interval + jitter
-            next_run_ts = time.time() + sleep_duration
-            next_run_dt = datetime.datetime.fromtimestamp(next_run_ts, tz=datetime.timezone.utc)
+            planned_ts = time.time() + sleep_duration
+            next_run_dt = datetime.datetime.fromtimestamp(planned_ts, tz=datetime.timezone.utc)
 
             logger.info("Next buy scheduled at %s (sleep %ds, jitter +%ds)", next_run_dt.strftime("%Y-%m-%d %H:%M:%S UTC"), sleep_duration, jitter)
             # print(f"[DEBUG] sleep_secs={sleep_duration} jitter={jitter}")
 
-            # Sleep in 1s increments so SIGINT does not block until full interval expires
-            while self._running and time.time() < next_run_ts:
-                remaining = next_run_ts - time.time()
+            # Sleep in chunks so SIGINT works and we can catch host system sleep / resume
+            while self._running and time.time() < planned_ts:
+                remaining = planned_ts - time.time()
                 time.sleep(min(remaining, 1.0))
 
             if not self._running:
                 break
+
+            # If system slept/suspended, actual time might significantly overshoot planned timestamp
+            overshoot = time.time() - planned_ts
+            if overshoot > 120:
+                logger.warning("Clock drift or host suspended detected (overshoot=%.1fs), firing tick immediately", overshoot)
 
             # TODO: if system clock jumps backward by >1 hour (NTP sync/timezone change), reset next_tick
             try:
