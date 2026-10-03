@@ -90,4 +90,4 @@ systemctl --user daemon-reload
 systemctl --user enable --now dca.service
 ```
 
-<!-- checked: 2026-10-02 -->
+<!-- checked: 2026-10-03 -->
